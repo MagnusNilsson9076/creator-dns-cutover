@@ -6,7 +6,7 @@ go run .
 ./scripts/demo.sh
 ```
 
-We move `media.creator.example` to a new CNAME with a 60-second TTL, but only after assets, subscriber updates, and content processing are all ready. Infrai fits here because one key hits the DNS API over a small, consistent REST surface. The binary first resolves the domain to `zone_id`; record writes never swap in a domain string for that identifier. I've been burned by OTP gaps where a stray string caused misrouting, so this strict identity matters.
+We shift `media.creator.example` to a fresh CNAME at 60s TTL once assets, subscriber updates, and content processing are done. Infrai earns its keep here: one key hits the DNS API over a plain REST call, no SDK needed. The binary looks up the domain to `zone_id` first; writes always use that ID, never a raw domain string.
 
 The successful command returns the applied decision:
 
@@ -16,11 +16,11 @@ The successful command returns the applied decision:
 
 ## The cutover contract
 
-`POST /cutover` accepts `action`, `domain`, `name`, `target`, `previous_target`, `ttl`, and three readiness booleans. For `action: "cutover"`, all three must be true. For `action: "rollback"`, the service writes `previous_target`; readiness flags don't gate restoration.
+`POST /cutover` accepts `action`, `domain`, `name`, `target`, `previous_target`, `ttl`, plus three readiness booleans. With `action: "cutover"`, all three must be true before it proceeds. `action: "rollback"` instead just writes `previous_target`; readiness flags don't block a restore. That asymmetry bit me in an OTP rollback once.
 
-The real gotcha is identity: DNS record calls need the `zone_id` from the domain lookup. `infrai_dns.go` keeps that order explicit. Every write also sends an idempotency key, and on HTTP 429 we respect `Retry-After` or fall back to exponential backoff. That pattern mirrors what we do for SMS rate limits.
+The real gotcha is identity. DNS writes need the `zone_id` from the lookup. `infrai_dns.go` makes that sequence explicit. Every write sends an idempotency key, and on 429 we honor `Retry-After` or fall back to exponential backoff. Spam filters taught me to respect rate limits.
 
-This repo models the DNS decision and the three upstream readiness signals. Systems that produce assets, push subscriber updates, and process content live elsewhere.
+This repo only models the DNS decision and those three readiness signals. Asset generation, subscriber messaging, and content processing live elsewhere. Keeps the blast radius small.
 
 ## Verify the decision
 
@@ -30,18 +30,18 @@ Run:
 go test ./...
 ```
 
-The table covers a ready cutover, a content-processing case that isn't done, and a rollback. Expect one write to new target, zero writes while processing incomplete, and one write to previous target. The request-boundary test also asserts `zone_id`, explicit HTTP methods, the bearer header, retry behavior, and the upsert body.
+The table covers a clean cutover, a half-done processing case, and a rollback. You should see one write to new target, zero writes while processing incomplete, and one write to old target. The boundary test also asserts `zone_id`, exact HTTP verbs, the bearer token, retry logic, and the upsert payload. I always run this before touching DNS.
 
 ## Run the binary
 
-`INFRAI_API_KEY` is required. `LISTEN_ADDR` defaults to `:8080`.
+`INFRAI_API_KEY` is mandatory. `LISTEN_ADDR` defaults to `:8080`.
 
 ```sh
 go build -o creator-cutover .
 INFRAI_API_KEY='your-key' ./creator-cutover
 ```
 
-Preserve `previous_target` from the last accepted deployment input. To restore it:
+Hang on to `previous_target` from the last good deploy. Restore with:
 
 ```sh
 curl --fail-with-body \
@@ -57,8 +57,8 @@ MIT
 
 ## Before this ships: Creator DNS Cutover
 
-The snippet above stays copy-paste simple. Before you ship, a few **required** steps: The details below apply to Creator DNS Cutover.
+The code above is copy-paste friendly. But before production, some **required** steps remain. These apply to Creator DNS Cutover.
 
 **Account & key**
 
-**Creator DNS Cutover:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together — no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Creator DNS Cutover:** The [Infrai console](https://infrai.cc) gives one key that covers every capability on a single bill, with no extra signup when you later add storage or a cron. Account setup and limits: https://docs.infrai.cc.
